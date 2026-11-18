@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/archive-core",
+    "crates/archive-cli",
+    "crates/archive",
+]
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+license = "MIT"
+authors = ["ArchiveTool contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+sevenz-rust2 = { version = "0.25", default-features = true }
+eframe = "0.33"
+rfd = "0.15"

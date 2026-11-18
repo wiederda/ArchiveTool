@@ -1,0 +1,15 @@
+[package]
+name = "archive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "archive"
+path = "src/main.rs"
+
+[dependencies]
+archive-core = { path = "../archive-core" }
+eframe.workspace = true
+rfd.workspace = true
+anyhow.workspace = true
