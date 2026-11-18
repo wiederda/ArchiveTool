@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use archive_core::{extract_entry, list_entries, ArchiveEntry};
+use archive_core::{create_zip, extract_entry, list_entries, ArchiveEntry};
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
@@ -79,6 +79,37 @@ impl ArchiveApp {
         }
     }
 
+    fn create_archive(&mut self) {
+        let Some(inputs) = rfd::FileDialog::new().pick_files() else {
+            return;
+        };
+        if inputs.is_empty() {
+            return;
+        }
+
+        let Some(output) = rfd::FileDialog::new()
+            .add_filter("ZIP-Archiv", &["zip"])
+            .set_file_name("archiv.zip")
+            .save_file()
+        else {
+            return;
+        };
+
+        match create_zip(&output, &inputs) {
+            Ok(()) => match list_entries(&output) {
+                Ok(entries) => {
+                    self.archive_path = Some(output.clone());
+                    self.entries = entries;
+                    self.selected = None;
+                    self.search.clear();
+                    self.status = format!("Archiv erstellt: {}", output.display());
+                }
+                Err(error) => self.status = format!("Archiv erstellt, konnte aber nicht geöffnet werden: {error}"),
+            },
+            Err(error) => self.status = format!("Archiv konnte nicht erstellt werden: {error}"),
+        }
+    }
+
     fn visible_entries(&self) -> Vec<(usize, &ArchiveEntry)> {
         let query = self.search.trim().to_lowercase();
         self.entries
@@ -111,6 +142,9 @@ impl eframe::App for ArchiveApp {
 
                     if ui.add_sized([132.0, 36.0], egui::Button::new("＋  Öffnen")).clicked() {
                         self.open_archive();
+                    }
+                    if ui.add_sized([132.0, 36.0], egui::Button::new("＋  Erstellen")).clicked() {
+                        self.create_archive();
                     }
                     let extract_enabled = self.selected.is_some();
                     if ui.add_enabled(
@@ -209,6 +243,9 @@ impl eframe::App for ArchiveApp {
                     if ui.add_sized([170.0, 40.0], egui::Button::new("＋  Archiv öffnen")).clicked() {
                         self.open_archive();
                     }
+                    if ui.add_sized([190.0, 40.0], egui::Button::new("＋  ZIP erstellen")).clicked() {
+                        self.create_archive();
+                    }
                 });
                 return;
             }
@@ -228,23 +265,31 @@ impl eframe::App for ArchiveApp {
                                 ui.strong("Typ");
                                 ui.end_row();
 
+                                let mut clicked_index = None;
                                 for (index, entry) in self.visible_entries() {
                                     let selected = self.selected == Some(index);
                                     let icon = if entry.is_directory { "📁" } else { "📄" };
-                                    if ui.selectable_label(
-                                        selected,
-                                        format!("{icon}  {}", entry.name),
-                                    ).clicked() {
-                                        self.selected = Some(index);
+                                    if ui
+                                        .selectable_label(
+                                            selected,
+                                            format!("{icon}  {}", entry.name),
+                                        )
+                                        .clicked()
+                                    {
+                                        clicked_index = Some(index);
                                     }
                                     ui.label(format_bytes(entry.size));
                                     ui.label(
-                                    entry.compressed_size
-                                    .map(format_bytes)
-                                    .unwrap_or_else(|| "–".to_string())
+                                        entry
+                                            .compressed_size
+                                            .map(format_bytes)
+                                            .unwrap_or_else(|| "–".to_string()),
                                     );
                                     ui.label(if entry.is_directory { "Ordner" } else { "Datei" });
                                     ui.end_row();
+                                }
+                                if let Some(index) = clicked_index {
+                                    self.selected = Some(index);
                                 }
                             });
                     });
