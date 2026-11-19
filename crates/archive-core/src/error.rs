@@ -12,8 +12,14 @@ pub enum ArchiveError {
     UnsupportedFormat(String),
     #[error("Eintrag nicht gefunden: {0}")]
     EntryNotFound(String),
+    #[error("Eintrag existiert bereits: {0}")]
+    EntryExists(String),
     #[error("Unsicherer Archivpfad: {0}")]
     UnsafePath(String),
+    #[error("Nicht unterstützte Operation: {0}")]
+    UnsupportedOperation(String),
+    #[error("Archivprüfung fehlgeschlagen: {0}")]
+    Verification(String),
     #[error("Ungültiger Zielpfad: {0}")]
     InvalidPath(PathBuf),
 }

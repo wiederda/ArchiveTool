@@ -261,7 +261,6 @@ dependencies = [
 name = "archive"
 version = "0.2.0"
 dependencies = [
- "anyhow",
  "archive-core",
  "eframe",
  "rfd",

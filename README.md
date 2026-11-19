@@ -10,12 +10,18 @@ Ein modularer Archivmanager in Rust mit getrennten Anwendungen für CLI und GUI.
 
 ## Aktueller Stand (0.2.0)
 
-- ZIP: Archiv öffnen, Einträge auflisten, einzelne Dateien extrahieren, ZIP erstellen.
-- 7z: Archiv öffnen, Einträge auflisten und einzelne Dateien extrahieren.
-- GUI: Archiv öffnen, Inhalt anzeigen und ausgewählte Datei extrahieren.
-- CLI: `list`, `extract`, `create`.
+- ZIP: Archiv öffnen, Einträge auflisten, einzelne Dateien, Auswahlen oder das
+  gesamte Archiv extrahieren, ZIP erstellen, Dateien hinzufügen/ersetzen,
+  Einträge umbenennen/löschen und Integrität testen.
+- 7z: Archiv öffnen, Einträge auflisten, Dateien, Auswahlen oder das gesamte
+  Archiv extrahieren und Integrität testen.
+- GUI: Office-Ribbon mit Icons, Mehrfachauswahl (Strg/Umschalt),
+  Kontextmenü, sortierbare Spalten, Entpacken, Hinzufügen, Umbenennen,
+  Löschen mit Bestätigung, Testen und Eigenschaften.
+- CLI: `list`, `extract`, `create`, `add`, `rename`, `delete`, `test`, `info`.
 
-Die 7z-Kompression und das Aktualisieren bestehender Archive werden in der nächsten Ausbaustufe ergänzt. Nicht alle 7z-Operationen sind bereits implementiert.
+Die 7z-Erstellung und das Bearbeiten externer Dateien werden in den nächsten
+Ausbaustufen ergänzt.
 
 ## Voraussetzungen
 
@@ -33,8 +39,17 @@ cargo build --workspace --release
 ```bash
 cargo run -p archive-cli -- list beispiel.zip
 cargo run -p archive-cli -- extract beispiel.zip --entry config/settings.ini --output ./output
+cargo run -p archive-cli -- extract beispiel.zip --output ./output
 cargo run -p archive-cli -- create neu.zip ./datei.txt ./ordner
+cargo run -p archive-cli -- add neu.zip ./weitere-datei.txt
+cargo run -p archive-cli -- rename neu.zip ordner/alt.txt ordner/neu.txt
+cargo run -p archive-cli -- delete neu.zip datei.txt
+cargo run -p archive-cli -- test neu.zip
+cargo run -p archive-cli -- info neu.zip
 ```
+
+Mehrere Einträge lassen sich mit wiederholtem `--entry` auswählen. Ohne
+`--entry` wird das gesamte Archiv entpackt.
 
 ## GUI
 

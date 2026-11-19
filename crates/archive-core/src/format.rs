@@ -33,3 +33,12 @@ impl ArchiveFormat {
         ))
     }
 }
+
+impl std::fmt::Display for ArchiveFormat {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Zip => formatter.write_str("ZIP"),
+            Self::SevenZip => formatter.write_str("7Z"),
+        }
+    }
+}
