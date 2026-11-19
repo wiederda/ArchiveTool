@@ -2,11 +2,14 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use archive_core::{
-    ArchiveEntry, ArchiveFormat, OperationReport, add_to_zip, create_zip, extract_all,
-    extract_selection, list_entries, remove_entries_from_zip, rename_entry_in_zip, test_archive,
+    ArchiveEntry, ArchiveFormat, OperationReport, add_to_zip, create_7z, create_zip, extract_all,
+    extract_entry, extract_selection, list_entries, remove_entries_from_zip, rename_entry_in_zip,
+    replace_entry_in_zip, test_archive,
 };
 use eframe::egui;
 
@@ -133,6 +136,7 @@ enum SortColumn {
 #[derive(Debug, Clone, Copy)]
 enum RowAction {
     Extract,
+    Edit,
     Rename,
     Delete,
     Properties,
@@ -144,6 +148,16 @@ struct ReportWindow {
     title: String,
     summary: String,
     details: Vec<String>,
+}
+
+struct EditSession {
+    archive_path: PathBuf,
+    entry_name: String,
+    temp_dir: PathBuf,
+    file_path: PathBuf,
+    original_size: u64,
+    original_modified: Option<SystemTime>,
+    error: Option<String>,
 }
 
 struct ArchiveApp {
@@ -164,6 +178,9 @@ struct ArchiveApp {
     rename_to: String,
     rename_error: Option<String>,
     rename_focus: bool,
+    edit_session: Option<EditSession>,
+    confirm_close_edit: bool,
+    allow_close: bool,
 }
 
 impl Default for ArchiveApp {
@@ -186,37 +203,86 @@ impl Default for ArchiveApp {
             rename_to: String::new(),
             rename_error: None,
             rename_focus: false,
+            edit_session: None,
+            confirm_close_edit: false,
+            allow_close: false,
         }
     }
 }
 
 impl ArchiveApp {
+    fn open_archive_path(&mut self, path: PathBuf) {
+        if self
+            .edit_session
+            .as_ref()
+            .is_some_and(|session| session.archive_path != path)
+        {
+            self.status = "Bitte zuerst die offene Bearbeitung übernehmen oder verwerfen.".into();
+            return;
+        }
+        match list_entries(&path) {
+            Ok(entries) => {
+                self.archive_path = Some(path.clone());
+                self.entries = entries;
+                self.selection.clear();
+                self.anchor = None;
+                self.search.clear();
+                self.status = format!(
+                    "{} Einträge aus {} geladen",
+                    self.entries.len(),
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("Archiv")
+                );
+            }
+            Err(error) => self.status = format!("Archiv konnte nicht geöffnet werden: {error}"),
+        }
+    }
+
     fn open_archive(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Archive", &["zip", "7z"])
             .pick_file()
         {
-            match list_entries(&path) {
-                Ok(entries) => {
-                    self.archive_path = Some(path.clone());
-                    self.entries = entries;
-                    self.selection.clear();
-                    self.anchor = None;
-                    self.search.clear();
-                    self.status = format!(
-                        "{} Einträge aus {} geladen",
-                        self.entries.len(),
-                        path.file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("Archiv")
-                    );
-                }
-                Err(error) => self.status = format!("Archiv konnte nicht geöffnet werden: {error}"),
+            self.open_archive_path(path);
+        }
+    }
+
+    fn handle_dropped_files(&mut self, files: Vec<PathBuf>) {
+        if files.is_empty() {
+            return;
+        }
+
+        // Archive werden geöffnet; normale Dateien und Ordner werden in das
+        // aktuell geöffnete ZIP übernommen.
+        let archives: Vec<_> = files
+            .iter()
+            .filter(|path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "zip" | "7z"))
+            })
+            .cloned()
+            .collect();
+        if !archives.is_empty() {
+            if files.len() != 1 {
+                self.status = "Bitte Archive einzeln ablegen.".into();
+            } else if archives.len() == 1 {
+                self.open_archive_path(archives[0].clone());
             }
+            return;
+        }
+
+        if self.can_update_zip() {
+            self.apply_add(files);
         }
     }
 
     fn create_archive(&mut self) {
+        if self.edit_session.is_some() {
+            self.status = "Bitte zuerst die offene Bearbeitung übernehmen oder verwerfen.".into();
+            return;
+        }
         let Some(inputs) = rfd::FileDialog::new().pick_files() else {
             return;
         };
@@ -226,13 +292,25 @@ impl ArchiveApp {
 
         let Some(output) = rfd::FileDialog::new()
             .add_filter("ZIP-Archiv", &["zip"])
+            .add_filter("7z-Archiv", &["7z"])
             .set_file_name("archiv.zip")
             .save_file()
         else {
             return;
         };
 
-        match create_zip(&output, &inputs) {
+        let creation = match output.extension().and_then(|extension| extension.to_str()) {
+            Some(extension) if extension.eq_ignore_ascii_case("7z") => create_7z(&output, &inputs),
+            Some(extension) if extension.eq_ignore_ascii_case("zip") => {
+                create_zip(&output, &inputs)
+            }
+            _ => {
+                self.status = "Bitte als .zip- oder .7z-Datei speichern.".into();
+                return;
+            }
+        };
+
+        match creation {
             Ok(()) => match list_entries(&output) {
                 Ok(entries) => {
                     self.archive_path = Some(output.clone());
@@ -368,6 +446,10 @@ impl ArchiveApp {
     }
 
     fn can_update_zip(&mut self) -> bool {
+        if self.edit_session.is_some() {
+            self.status = "Bitte zuerst die offene Bearbeitung übernehmen oder verwerfen.".into();
+            return false;
+        }
         let Some(archive) = self.archive_path.clone() else {
             self.status = "Bitte zuerst ein Archiv öffnen.".into();
             return false;
@@ -416,6 +498,10 @@ impl ArchiveApp {
     }
 
     fn perform_delete(&mut self) {
+        if self.edit_session.is_some() {
+            self.status = "Bitte zuerst die offene Bearbeitung übernehmen oder verwerfen.".into();
+            return;
+        }
         let Some(archive) = self.archive_path.clone() else {
             return;
         };
@@ -535,7 +621,121 @@ impl ArchiveApp {
         self.rename_focus = true;
     }
 
+    fn begin_external_edit(&mut self) {
+        if self.edit_session.is_some() {
+            self.status = "Bitte zuerst die offene Bearbeitung übernehmen oder verwerfen.".into();
+            return;
+        }
+        if self.selection.len() != 1 {
+            self.status = "Bitte genau eine Datei zum Bearbeiten auswählen.".into();
+            return;
+        }
+        let Some(archive) = self.archive_path.clone() else {
+            self.status = "Bitte zuerst ein Archiv öffnen.".into();
+            return;
+        };
+        match ArchiveFormat::detect(&archive) {
+            Ok(ArchiveFormat::Zip) => {}
+            Ok(format) => {
+                self.status =
+                    format!("Externe Bearbeitung für {format} wird noch nicht unterstützt.");
+                return;
+            }
+            Err(error) => {
+                self.status = format!("Archivformat konnte nicht erkannt werden: {error}");
+                return;
+            }
+        }
+        let Some(entry) = self
+            .primary_selection()
+            .and_then(|index| self.entries.get(index))
+        else {
+            return;
+        };
+        if entry.is_directory {
+            self.status = "Ordner können nicht direkt extern bearbeitet werden.".into();
+            return;
+        }
+        let entry_name = entry.name.clone();
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temp_dir =
+            std::env::temp_dir().join(format!("archivetool-edit-{}-{unique}", std::process::id()));
+        let result = (|| -> Result<PathBuf, String> {
+            std::fs::create_dir_all(&temp_dir).map_err(|error| error.to_string())?;
+            extract_entry(&archive, &entry_name, &temp_dir).map_err(|error| error.to_string())?;
+            let relative = PathBuf::from(entry_name.replace('\\', "/"));
+            let file_path = temp_dir.join(relative);
+            if !file_path.is_file() {
+                return Err("Der extrahierte Eintrag ist keine Datei.".into());
+            }
+            open_with_default_editor(&file_path).map_err(|error| error.to_string())?;
+            Ok(file_path)
+        })();
+
+        match result {
+            Ok(file_path) => {
+                let metadata = std::fs::metadata(&file_path).ok();
+                self.edit_session = Some(EditSession {
+                    archive_path: archive,
+                    entry_name: entry_name.clone(),
+                    temp_dir,
+                    file_path,
+                    original_size: metadata.as_ref().map_or(0, |metadata| metadata.len()),
+                    original_modified: metadata.and_then(|metadata| metadata.modified().ok()),
+                    error: None,
+                });
+                self.status = format!("Extern zum Bearbeiten geöffnet: {entry_name}");
+            }
+            Err(error) => {
+                self.status = format!("Datei konnte nicht extern geöffnet werden: {error}");
+                // Bei einem fehlgeschlagenen Editorstart bleiben temporäre
+                // Dateien bewusst erhalten, damit keine Daten verloren gehen.
+            }
+        }
+    }
+
+    fn apply_external_edit(&mut self) {
+        let Some(session) = self.edit_session.as_ref() else {
+            return;
+        };
+        match replace_entry_in_zip(
+            &session.archive_path,
+            &session.entry_name,
+            &session.file_path,
+        ) {
+            Ok(_) => {
+                let entry_name = session.entry_name.clone();
+                let temp_dir = session.temp_dir.clone();
+                self.edit_session = None;
+                let _ = std::fs::remove_dir_all(temp_dir);
+                self.reload();
+                self.status = format!("Änderung übernommen: {entry_name}");
+            }
+            Err(error) => {
+                if let Some(session) = self.edit_session.as_mut() {
+                    session.error = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    fn discard_external_edit(&mut self) {
+        if let Some(session) = self.edit_session.take() {
+            let _ = std::fs::remove_dir_all(session.temp_dir);
+            self.status = format!("Temporäre Änderung verworfen: {}", session.entry_name);
+        }
+    }
+
     fn perform_rename(&mut self) {
+        if self.edit_session.is_some() {
+            self.rename_error =
+                Some("Bitte zuerst die offene Bearbeitung übernehmen oder verwerfen.".into());
+            return;
+        }
         let Some(archive) = self.archive_path.clone() else {
             return;
         };
@@ -721,6 +921,18 @@ impl ArchiveApp {
                         .clicked()
                         {
                             self.extract_selected();
+                        }
+                        if ribbon_button(
+                            ui,
+                            &self.icons,
+                            ICON_FILE,
+                            "✎",
+                            "Extern bearbeiten",
+                            single_selection,
+                        )
+                        .clicked()
+                        {
+                            self.begin_external_edit();
                         }
                         if ribbon_button(
                             ui,
@@ -1016,6 +1228,10 @@ impl ArchiveApp {
                                                 row_action = Some((RowAction::Extract, index));
                                                 ui.close();
                                             }
+                                            if ui.button("Extern bearbeiten").clicked() {
+                                                row_action = Some((RowAction::Edit, index));
+                                                ui.close();
+                                            }
                                             let rename_allowed =
                                                 !selected || self.selection.len() == 1;
                                             if ui
@@ -1086,6 +1302,7 @@ impl ArchiveApp {
                                         }
                                         match action {
                                             RowAction::Extract => self.extract_selected(),
+                                            RowAction::Edit => self.begin_external_edit(),
                                             RowAction::Rename => self.begin_rename(),
                                             RowAction::Delete => self.request_delete(),
                                             RowAction::Properties => self.show_properties = true,
@@ -1339,10 +1556,122 @@ impl ArchiveApp {
             self.report = None;
         }
     }
+
+    fn edit_session_window(&mut self, ctx: &egui::Context) {
+        let Some(session) = self.edit_session.as_ref() else {
+            return;
+        };
+        let entry_name = session.entry_name.clone();
+        let original_size = session.original_size;
+        let original_modified = session.original_modified;
+        let file_path = session.file_path.clone();
+        let error = session.error.clone();
+        let metadata = std::fs::metadata(&file_path).ok();
+        let changed = metadata.as_ref().is_some_and(|metadata| {
+            metadata.len() != original_size || metadata.modified().ok() != original_modified
+        });
+
+        let mut apply = false;
+        let mut discard = false;
+        egui::Window::new("Externe Bearbeitung")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(format!("Eintrag: {entry_name}"));
+                ui.add_space(6.0);
+                ui.label("Die Datei ist in deinem externen Editor geöffnet.");
+                ui.label("Speichere dort und übernimm die Änderung anschließend bewusst.");
+                ui.add_space(6.0);
+                ui.label(if changed {
+                    "Änderung erkannt und bereit zur Übernahme."
+                } else {
+                    "Noch keine Änderung erkannt. Nach dem Speichern hier erneut prüfen."
+                });
+                if let Some(error) = &error {
+                    ui.add_space(4.0);
+                    ui.colored_label(egui::Color32::from_rgb(0xC4, 0x2B, 0x1C), error);
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(changed, egui::Button::new("Änderung übernehmen"))
+                        .clicked()
+                    {
+                        apply = true;
+                    }
+                    if ui.button("Änderung verwerfen").clicked() {
+                        discard = true;
+                    }
+                });
+            });
+
+        if apply {
+            self.apply_external_edit();
+        } else if discard {
+            self.discard_external_edit();
+        }
+    }
+
+    fn close_edit_warning(&mut self, ctx: &egui::Context) {
+        if !self.confirm_close_edit {
+            return;
+        }
+        let temp_path = self
+            .edit_session
+            .as_ref()
+            .map(|session| session.file_path.display().to_string())
+            .unwrap_or_default();
+        let mut close = false;
+        let mut stay = false;
+        egui::Window::new("Bearbeitung noch offen")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label("Die Datei wurde noch nicht ins Archiv übernommen.");
+                ui.label("Die temporäre Datei bleibt erhalten:");
+                ui.label(egui::RichText::new(&temp_path).small().monospace());
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Schließen und Datei behalten").clicked() {
+                        close = true;
+                    }
+                    if ui.button("Weiter bearbeiten").clicked() {
+                        stay = true;
+                    }
+                });
+            });
+        if close {
+            self.confirm_close_edit = false;
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if stay {
+            self.confirm_close_edit = false;
+        }
+    }
 }
 
 impl eframe::App for ArchiveApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let close_requested = ctx.input(|input| input.viewport().close_requested());
+        if close_requested && self.edit_session.is_some() && !self.allow_close {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.confirm_close_edit = true;
+        }
+        let (dropped, hovering_files) = ctx.input(|input| {
+            (
+                input
+                    .raw
+                    .dropped_files
+                    .iter()
+                    .filter_map(|file| file.path.clone())
+                    .collect::<Vec<_>>(),
+                !input.raw.hovered_files.is_empty(),
+            )
+        });
+        if !dropped.is_empty() {
+            self.handle_dropped_files(dropped);
+        }
+
         apply_theme(ctx, self.dark_mode);
         self.ribbon(ctx);
         self.sidebar(ctx);
@@ -1352,6 +1681,30 @@ impl eframe::App for ArchiveApp {
         self.rename_dialog(ctx);
         self.properties_window(ctx);
         self.report_window(ctx);
+        self.edit_session_window(ctx);
+        self.close_edit_warning(ctx);
+
+        if hovering_files {
+            egui::Area::new(egui::Id::new("file_drop_overlay"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(ctx.content_rect().center() - egui::vec2(190.0, 42.0))
+                .show(ctx, |ui| {
+                    egui::Frame::popup(ui.style())
+                        .fill(ACCENT)
+                        .inner_margin(egui::Margin::symmetric(20, 14))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(if self.archive_path.is_some() {
+                                    "Dateien/Ordner hinzufügen · Archiv öffnen"
+                                } else {
+                                    "ZIP- oder 7z-Archiv öffnen"
+                                })
+                                .color(egui::Color32::WHITE)
+                                .strong(),
+                            );
+                        });
+                });
+        }
     }
 }
 
@@ -1371,6 +1724,28 @@ fn sort_header(
     ui.add(egui::Button::new(egui::RichText::new(format!("{label}{marker}")).strong()).frame(false))
         .on_hover_text("Nach dieser Spalte sortieren")
         .clicked()
+}
+
+fn open_with_default_editor(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("explorer.exe");
+        command.arg(path);
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(path);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(path);
+        command
+    };
+    command.spawn().map(|_| ())
 }
 
 /// Setzt die Farben und Rundungen im Stil eines modernen Office-Themes.

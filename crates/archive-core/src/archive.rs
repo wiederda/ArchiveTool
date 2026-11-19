@@ -318,6 +318,59 @@ pub fn create_zip(output: &Path, inputs: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
+/// Erstellt ein 7z-Archiv in einer temporären Datei, prüft es vollständig und
+/// ersetzt erst danach ein eventuell vorhandenes Zielarchiv.
+pub fn create_7z(output: &Path, inputs: &[PathBuf]) -> Result<()> {
+    let planned = plan_inputs(inputs)?;
+    let temp = temp_path_for(output);
+    let result = (|| -> Result<()> {
+        let mut writer = sevenz_rust2::ArchiveWriter::create(&temp)
+            .map_err(|error| ArchiveError::SevenZip(error.to_string()))?;
+        for entry in &planned {
+            let metadata = sevenz_rust2::ArchiveEntry::from_path(&entry.path, entry.name.clone());
+            if entry.is_directory {
+                writer
+                    .push_archive_entry::<&[u8]>(metadata, None)
+                    .map_err(|error| ArchiveError::SevenZip(error.to_string()))?;
+            } else {
+                let source = File::open(&entry.path)?;
+                writer
+                    .push_archive_entry(metadata, Some(source))
+                    .map_err(|error| ArchiveError::SevenZip(error.to_string()))?;
+            }
+        }
+        writer
+            .finish()
+            .map_err(|error| ArchiveError::SevenZip(error.to_string()))?;
+
+        let written = list_entries(&temp)?.len();
+        if written != planned.len() {
+            return Err(ArchiveError::Verification(format!(
+                "erwartet {} Einträge, geschrieben {written}",
+                planned.len()
+            )));
+        }
+        let report = test_archive(&temp)?;
+        if !report.is_success() || report.processed != planned.len() {
+            return Err(ArchiveError::Verification(format!(
+                "7z-Prüfung fehlgeschlagen: {} von {} Einträgen geprüft",
+                report.processed,
+                planned.len()
+            )));
+        }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) if output.exists() => replace_archive(&temp, output),
+        Ok(()) => fs::rename(&temp, output).map_err(ArchiveError::from),
+        Err(error) => {
+            let _ = fs::remove_file(&temp);
+            Err(error)
+        }
+    }
+}
+
 /// Fügt Dateien und Verzeichnisse zu einem bestehenden ZIP hinzu. Gleichnamige
 /// Einträge werden ersetzt. Gearbeitet wird auf einer temporären Datei, die
 /// erst nach erfolgreicher Prüfung das Original ersetzt.

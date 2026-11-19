@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use archive_core::{
-    ArchiveFormat, OperationReport, add_to_zip, create_zip, extract_all, extract_selection,
-    list_entries, remove_entries_from_zip, rename_entry_in_zip, test_archive,
+    ArchiveFormat, OperationReport, add_to_zip, create_7z, create_zip, extract_all,
+    extract_selection, list_entries, remove_entries_from_zip, rename_entry_in_zip, test_archive,
 };
 use clap::{Parser, Subcommand};
 
@@ -79,7 +79,15 @@ fn main() -> Result<()> {
             finish_report(report, "Extrahiert")?;
         }
         Command::Create { archive, inputs } => {
-            create_zip(&archive, &inputs)?;
+            match archive.extension().and_then(|extension| extension.to_str()) {
+                Some(extension) if extension.eq_ignore_ascii_case("7z") => {
+                    create_7z(&archive, &inputs)?
+                }
+                Some(extension) if extension.eq_ignore_ascii_case("zip") => {
+                    create_zip(&archive, &inputs)?
+                }
+                _ => anyhow::bail!("Zieldatei muss die Endung .zip oder .7z haben"),
+            }
             println!("Erstellt: {}", archive.display());
         }
         Command::Add { archive, inputs } => {
