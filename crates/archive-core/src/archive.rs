@@ -5,10 +5,16 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+use flate2::read::GzDecoder;
+use lz4_flex::frame::FrameDecoder;
 use sevenz_rust2::{Archive, ArchiveReader, Password};
+use tar::Archive as TarArchive;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
-use crate::{ArchiveEntry, ArchiveError, ArchiveFormat, Result};
+use bzip2::read::BzDecoder;
+use lzma_rust2::xz::XzReader;
+
+use crate::{ArchiveEntry, ArchiveError, ArchiveFormat, Result, TarCompression};
 
 /// Ergebnis einer Operation, die mehrere Einträge verarbeitet (Extraktion, Test).
 #[derive(Debug, Default)]
@@ -71,7 +77,54 @@ pub fn list_entries(path: &Path) -> Result<Vec<ArchiveEntry>> {
                 })
                 .collect())
         }
+        format => list_tar_entries(path, tar_compression(format)),
     }
+}
+
+fn tar_compression(format: ArchiveFormat) -> TarCompression {
+    format
+        .tar_compression()
+        .expect("ZIP und 7z werden bereits vorher behandelt")
+}
+
+fn list_tar_entries(path: &Path, compression: TarCompression) -> Result<Vec<ArchiveEntry>> {
+    let mut archive = open_tar(path, compression)?;
+    let mut entries = Vec::new();
+    for item in archive.entries()? {
+        let item = item?;
+        let is_directory = item.header().entry_type().is_dir();
+        let name = tar_entry_name(&item)?;
+        entries.push(ArchiveEntry {
+            name: if is_directory {
+                format!("{}/", name.trim_end_matches('/'))
+            } else {
+                name
+            },
+            size: item.size(),
+            compressed_size: None,
+            is_directory,
+        });
+    }
+    Ok(entries)
+}
+
+fn open_tar(path: &Path, compression: TarCompression) -> Result<TarArchive<Box<dyn Read>>> {
+    let file = File::open(path)?;
+    let reader: Box<dyn Read> = match compression {
+        TarCompression::None => Box::new(file),
+        TarCompression::Gzip => Box::new(GzDecoder::new(file)),
+        TarCompression::Bzip2 => Box::new(BzDecoder::new(file)),
+        TarCompression::Xz => Box::new(XzReader::new(file, true)),
+        TarCompression::Zstd => Box::new(zstd::stream::read::Decoder::new(file)?),
+        TarCompression::Lz4 => Box::new(FrameDecoder::new(file)),
+    };
+    Ok(TarArchive::new(reader))
+}
+
+fn tar_entry_name<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String> {
+    let path = entry.path()?;
+    let name = path.to_string_lossy().replace('\\', "/");
+    Ok(name.strip_prefix("./").unwrap_or(&name).to_string())
 }
 
 pub fn extract_entry(archive_path: &Path, entry_name: &str, destination: &Path) -> Result<()> {
@@ -124,7 +177,30 @@ pub fn extract_entry(archive_path: &Path, entry_name: &str, destination: &Path) 
             fs::write(&target, data)?;
             Ok(())
         }
+        format => extract_tar_entry(archive_path, entry_name, destination, tar_compression(format)),
     }
+}
+
+fn extract_tar_entry(
+    archive_path: &Path,
+    entry_name: &str,
+    destination: &Path,
+    compression: TarCompression,
+) -> Result<()> {
+    let wanted = normalize_name(entry_name);
+    let wanted = wanted.trim_end_matches('/');
+    safe_relative_path(entry_name)?;
+
+    let mut archive = open_tar(archive_path, compression)?;
+    for item in archive.entries()? {
+        let mut item = item?;
+        if tar_entry_name(&item)?.trim_end_matches('/') != wanted {
+            continue;
+        }
+        let is_directory = item.header().entry_type().is_dir();
+        return extract_tar_item(&mut item, wanted, is_directory, destination);
+    }
+    Err(ArchiveError::EntryNotFound(entry_name.to_string()))
 }
 
 /// Extrahiert alle Einträge des Archivs.
@@ -154,7 +230,101 @@ fn extract_where(
     match ArchiveFormat::detect(archive_path)? {
         ArchiveFormat::Zip => extract_zip_where(archive_path, destination, wanted),
         ArchiveFormat::SevenZip => extract_7z_where(archive_path, destination, wanted),
+        ArchiveFormat::Tar => extract_tar_where(
+            archive_path,
+            destination,
+            wanted,
+            TarCompression::None,
+        ),
+        ArchiveFormat::TarGz => extract_tar_where(
+            archive_path,
+            destination,
+            wanted,
+            TarCompression::Gzip,
+        ),
+        ArchiveFormat::TarBz2 => extract_tar_where(
+            archive_path,
+            destination,
+            wanted,
+            TarCompression::Bzip2,
+        ),
+        ArchiveFormat::TarXz => extract_tar_where(
+            archive_path,
+            destination,
+            wanted,
+            TarCompression::Xz,
+        ),
+        ArchiveFormat::TarZstd => extract_tar_where(
+            archive_path,
+            destination,
+            wanted,
+            TarCompression::Zstd,
+        ),
+        ArchiveFormat::TarLz4 => extract_tar_where(
+            archive_path,
+            destination,
+            wanted,
+            TarCompression::Lz4,
+        ),
     }
+}
+
+fn extract_tar_where(
+    archive_path: &Path,
+    destination: &Path,
+    wanted: impl Fn(&str) -> bool,
+    compression: TarCompression,
+) -> Result<OperationReport> {
+    let mut archive = open_tar(archive_path, compression)?;
+    let mut report = OperationReport::default();
+
+    for item in archive.entries()? {
+        let mut item = item?;
+        let name = tar_entry_name(&item)?;
+        let is_directory = item.header().entry_type().is_dir();
+        let listed = if is_directory {
+            format!("{}/", name.trim_end_matches('/'))
+        } else {
+            name.clone()
+        };
+        if !wanted(&listed) && !wanted(&name) {
+            continue;
+        }
+        match extract_tar_item(&mut item, &name, is_directory, destination) {
+            Ok(()) => report.processed += 1,
+            Err(error) => report.failures.push(EntryFailure {
+                name: listed,
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    Ok(report)
+}
+
+fn extract_tar_item<R: Read>(
+    item: &mut tar::Entry<'_, R>,
+    name: &str,
+    is_directory: bool,
+    destination: &Path,
+) -> Result<()> {
+    let target = destination.join(safe_relative_path(name)?);
+    if is_directory {
+        fs::create_dir_all(&target)?;
+        return Ok(());
+    }
+    if !item.header().entry_type().is_file() {
+        return Err(ArchiveError::UnsupportedOperation(format!(
+            "{name}: Es werden nur Dateien und Ordner unterstützt"
+        )));
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut output = File::create(&target)?;
+    std::io::copy(item, &mut output)?;
+    output.flush()?;
+    Ok(())
 }
 
 fn extract_zip_where(
@@ -306,7 +476,38 @@ pub fn test_archive(archive_path: &Path) -> Result<OperationReport> {
                 .map_err(|e| ArchiveError::SevenZip(e.to_string()))?;
             Ok(report)
         }
+        format => test_tar_archive(archive_path, tar_compression(format)),
     }
+}
+
+fn test_tar_archive(archive_path: &Path, compression: TarCompression) -> Result<OperationReport> {
+    let mut archive = open_tar(archive_path, compression)?;
+    let mut report = OperationReport::default();
+    for item in archive.entries()? {
+        let mut item = match item {
+            Ok(item) => item,
+            Err(error) => {
+                report.failures.push(EntryFailure {
+                    name: "unbekannt".to_string(),
+                    message: error.to_string(),
+                });
+                break;
+            }
+        };
+        let name = tar_entry_name(&item)?;
+        let mut sink = std::io::sink();
+        match std::io::copy(&mut item, &mut sink) {
+            Ok(_) => report.processed += 1,
+            Err(error) => {
+                report.failures.push(EntryFailure {
+                    name,
+                    message: error.to_string(),
+                });
+                break;
+            }
+        }
+    }
+    Ok(report)
 }
 
 pub fn create_zip(output: &Path, inputs: &[PathBuf]) -> Result<()> {
@@ -491,7 +692,7 @@ pub fn replace_entry_in_zip(
     source: &Path,
 ) -> Result<UpdateReport> {
     ensure_zip(archive_path, "Bearbeiten")?;
-    let target = normalize_name(entry_name);
+    let target = normalize_name(entry_name).trim_end_matches('/').to_string();
     safe_relative_path(&target)?;
     if !source.is_file() {
         return Err(ArchiveError::InvalidPath(source.to_path_buf()));
@@ -505,7 +706,7 @@ pub fn replace_entry_in_zip(
         let mut found = false;
         for index in 0..archive.len() {
             let item = archive.by_index(index)?;
-            if normalize_name(item.name()) == target {
+            if normalize_name(item.name()).trim_end_matches('/') == target {
                 if item.is_dir() {
                     return Err(ArchiveError::UnsupportedOperation(format!(
                         "{entry_name} ist ein Verzeichnis und kann nicht direkt bearbeitet werden"
@@ -527,7 +728,7 @@ pub fn replace_entry_in_zip(
         for index in 0..archive.len() {
             let mut item = archive.by_index(index)?;
             let name = item.name().to_string();
-            if normalize_name(&name) == target {
+            if normalize_name(&name).trim_end_matches('/') == target {
                 writer.start_file(name, options)?;
                 let mut input = File::open(source)?;
                 std::io::copy(&mut input, &mut writer)?;
@@ -1084,6 +1285,154 @@ mod tests {
         assert_eq!(report.processed, remaining.len());
     }
 
+    fn write_tar(path: &Path, source: &Path, compression: TarCompression) {
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.append_dir_all("quelle", source).unwrap();
+        let data = builder.into_inner().unwrap();
+
+        let packed = match compression {
+            TarCompression::None => data,
+            TarCompression::Gzip => {
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(&data).unwrap();
+                encoder.finish().unwrap()
+            }
+            TarCompression::Bzip2 => {
+                let mut encoder =
+                    bzip2::write::BzEncoder::new(Vec::new(), bzip2::Compression::default());
+                encoder.write_all(&data).unwrap();
+                encoder.finish().unwrap()
+            }
+            TarCompression::Xz => {
+                let mut encoder = lzma_rust2::xz::XzWriter::new(
+                    Vec::new(),
+                    lzma_rust2::xz::XzOptions::with_preset(6),
+                )
+                .unwrap();
+                encoder.write_all(&data).unwrap();
+                encoder.finish().unwrap()
+            }
+            TarCompression::Zstd => {
+                let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+                encoder.write_all(&data).unwrap();
+                encoder.finish().unwrap()
+            }
+            TarCompression::Lz4 => {
+                let mut encoder = lz4_flex::frame::FrameEncoder::new(Vec::new());
+                encoder.write_all(&data).unwrap();
+                encoder.finish().unwrap()
+            }
+        };
+        fs::write(path, packed).unwrap();
+    }
+
+    #[test]
+    fn reads_all_tar_variants() {
+        let temp = TempDir::new("tar");
+        let source = temp.0.join("source");
+        write_file(&source.join("readme.txt"), "hallo");
+        write_file(&source.join("docs/notes.md"), "notizen");
+        fs::create_dir_all(source.join("docs/leer")).unwrap();
+
+        for (file_name, compression) in [
+            ("test.tar", TarCompression::None),
+            ("test.tar.gz", TarCompression::Gzip),
+            ("test.tar.bz2", TarCompression::Bzip2),
+            ("test.tbz2", TarCompression::Bzip2),
+            ("test.tar.xz", TarCompression::Xz),
+            ("test.txz", TarCompression::Xz),
+            ("test.tar.zst", TarCompression::Zstd),
+            ("test.tzst", TarCompression::Zstd),
+            ("test.tar.lz4", TarCompression::Lz4),
+            ("test.tlz4", TarCompression::Lz4),
+        ] {
+            let archive = temp.0.join(file_name);
+            write_tar(&archive, &source, compression);
+
+            let listed = names(&archive);
+            assert!(
+                listed.contains(&"quelle/readme.txt".to_string()),
+                "{file_name}: {listed:?}"
+            );
+            assert!(listed.iter().any(|name| name == "quelle/docs/notes.md"));
+
+            let selected = temp.0.join(format!("selected-{file_name}"));
+            let report =
+                extract_selection(&archive, &["quelle/docs".to_string()], &selected).unwrap();
+            assert!(report.is_success(), "{:?}", report.failures);
+            assert_eq!(
+                fs::read_to_string(selected.join("quelle/docs/notes.md")).unwrap(),
+                "notizen"
+            );
+            assert!(selected.join("quelle/docs/leer").is_dir());
+            assert!(!selected.join("quelle/readme.txt").exists());
+
+            let all = temp.0.join(format!("all-{file_name}"));
+            let report = extract_all(&archive, &all).unwrap();
+            assert!(report.is_success(), "{:?}", report.failures);
+            assert_eq!(
+                fs::read_to_string(all.join("quelle/readme.txt")).unwrap(),
+                "hallo"
+            );
+
+            let single = temp.0.join(format!("single-{file_name}"));
+            extract_entry(&archive, "quelle/readme.txt", &single).unwrap();
+            assert_eq!(
+                fs::read_to_string(single.join("quelle/readme.txt")).unwrap(),
+                "hallo"
+            );
+
+            let report = test_archive(&archive).unwrap();
+            assert!(report.is_success(), "{:?}", report.failures);
+            assert_eq!(report.processed, listed.len());
+        }
+    }
+
+    #[test]
+    fn replaces_entry_content_without_changing_its_name() {
+        let temp = TempDir::new("replace");
+        let source = temp.0.join("source");
+        write_file(&source.join("readme.txt"), "alt");
+        write_file(&source.join("docs/notes.md"), "notizen");
+        let archive = temp.0.join("edit.zip");
+        create_zip(&archive, &[source.join("readme.txt"), source.join("docs")]).unwrap();
+
+        let edited = temp.0.join("edited.txt");
+        write_file(&edited, "neu");
+        let report = replace_entry_in_zip(&archive, "docs/notes.md", &edited).unwrap();
+        assert_eq!(report.replaced, 1);
+
+        let listed = names(&archive);
+        assert!(listed.contains(&"docs/notes.md".to_string()));
+        assert!(listed.contains(&"readme.txt".to_string()));
+
+        let out = temp.0.join("out");
+        extract_all(&archive, &out).unwrap();
+        assert_eq!(
+            fs::read_to_string(out.join("docs/notes.md")).unwrap(),
+            "neu"
+        );
+        assert_eq!(fs::read_to_string(out.join("readme.txt")).unwrap(), "alt");
+
+        assert!(matches!(
+            replace_entry_in_zip(&archive, "docs/notes.md", &temp.0.join("fehlt.txt")),
+            Err(ArchiveError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            replace_entry_in_zip(&archive, "gibtsnicht.txt", &edited),
+            Err(ArchiveError::EntryNotFound(_))
+        ));
+        assert!(matches!(
+            replace_entry_in_zip(&archive, "docs", &edited),
+            Err(ArchiveError::UnsupportedOperation(_))
+        ));
+        assert!(replace_entry_in_zip(&archive, "../ausserhalb.txt", &edited).is_err());
+
+        let report = test_archive(&archive).unwrap();
+        assert!(report.is_success(), "{:?}", report.failures);
+    }
+
     #[test]
     fn refuses_updates_for_non_zip_archives() {
         let temp = TempDir::new("nonzip");
@@ -1092,6 +1441,7 @@ mod tests {
         assert!(add_to_zip(&fake, &[]).is_err());
         assert!(remove_entries_from_zip(&fake, &["x".to_string()]).is_err());
         assert!(rename_entry_in_zip(&fake, "x", "y").is_err());
+        assert!(replace_entry_in_zip(&fake, "x", &fake).is_err());
     }
 
     #[test]

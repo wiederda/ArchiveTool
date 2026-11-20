@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use archive_core::{
     ArchiveFormat, OperationReport, add_to_zip, create_7z, create_zip, extract_all,
-    extract_selection, list_entries, remove_entries_from_zip, rename_entry_in_zip, test_archive,
+    extract_selection, list_entries, remove_entries_from_zip, rename_entry_in_zip,
+    replace_entry_in_zip, test_archive,
 };
 use clap::{Parser, Subcommand};
 
@@ -43,6 +44,13 @@ enum Command {
         entry: String,
         /// Neuer Name innerhalb des Archivs.
         name: String,
+    },
+    Replace {
+        archive: PathBuf,
+        /// Eintrag im Archiv, dessen Inhalt ersetzt wird.
+        entry: String,
+        /// Lokale Datei mit dem neuen Inhalt.
+        file: PathBuf,
     },
     Delete {
         archive: PathBuf,
@@ -106,6 +114,14 @@ fn main() -> Result<()> {
             let report = rename_entry_in_zip(&archive, &entry, &name)?;
             println!("Umbenannt: {} Einträge", report.renamed);
         }
+        Command::Replace {
+            archive,
+            entry,
+            file,
+        } => {
+            let report = replace_entry_in_zip(&archive, &entry, &file)?;
+            println!("Ersetzt: {} Einträge", report.replaced);
+        }
         Command::Delete { archive, entries } => {
             let report = remove_entries_from_zip(&archive, &entries)?;
             println!("Entfernt: {} Einträge", report.removed);
@@ -122,6 +138,7 @@ fn main() -> Result<()> {
                 .iter()
                 .filter_map(|entry| entry.compressed_size)
                 .sum();
+            let has_compressed = entries.iter().any(|entry| entry.compressed_size.is_some());
             let bytes = std::fs::metadata(&archive)
                 .with_context(|| format!("{} konnte nicht gelesen werden", archive.display()))?
                 .len();
@@ -130,7 +147,11 @@ fn main() -> Result<()> {
             println!("Dateigröße:   {bytes} B");
             println!("Einträge:     {}", entries.len());
             println!("Gesamtgröße:  {total} B");
-            println!("Komprimiert:  {compressed} B");
+            if has_compressed {
+                println!("Komprimiert:  {compressed} B");
+            } else {
+                println!("Komprimiert:  –");
+            }
         }
     }
     Ok(())

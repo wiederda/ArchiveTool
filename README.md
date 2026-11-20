@@ -15,16 +15,20 @@ Ein modularer Archivmanager in Rust mit getrennten Anwendungen für CLI und GUI.
   Einträge umbenennen/löschen und Integrität testen.
 - 7z: Archiv öffnen, Einträge auflisten, Dateien, Auswahlen oder das gesamte
   Archiv extrahieren und Integrität testen.
+- TAR und TAR.GZ: Archive öffnen, Einträge auflisten, Dateien, Auswahlen oder
+  das gesamte Archiv extrahieren und Integrität testen.
 - GUI: Office-Ribbon mit Icons, Mehrfachauswahl (Strg/Umschalt),
   Kontextmenü, sortierbare Spalten, Entpacken, Hinzufügen, Umbenennen,
   Löschen mit Bestätigung, Testen, Eigenschaften und Drag & Drop zum Öffnen
-  von ZIP-/7z-Archiven oder Hinzufügen von Dateien und Ordnern zu ZIP.
+  von Archiven oder Hinzufügen von Dateien und Ordnern zu ZIP.
 - GUI: Einzelne Dateien aus ZIP temporär im Standardeditor bearbeiten und nach
   ausdrücklicher Bestätigung geprüft ins Archiv übernehmen.
-- CLI: `list`, `extract`, `create`, `add`, `rename`, `delete`, `test`, `info`.
+- CLI: `list`, `extract`, `create`, `add`, `rename`, `replace`, `delete`,
+  `test`, `info`.
 
-7z kann erstellt, geöffnet, extrahiert und geprüft werden. Bearbeitungen
-bestehender 7z-Archive sind noch nicht unterstützt.
+7z kann erstellt, geöffnet, extrahiert und geprüft werden. TAR und TAR.GZ
+können gelesen und entpackt werden. Bearbeitungen bestehender 7z-, TAR- und
+TAR.GZ-Archive sind noch nicht unterstützt.
 
 ## Voraussetzungen
 
@@ -41,12 +45,15 @@ cargo build --workspace --release
 
 ```bash
 cargo run -p archive-cli -- list beispiel.zip
+cargo run -p archive-cli -- list beispiel.tar.gz
 cargo run -p archive-cli -- extract beispiel.zip --entry config/settings.ini --output ./output
 cargo run -p archive-cli -- extract beispiel.zip --output ./output
+cargo run -p archive-cli -- extract beispiel.tar.gz --output ./output
 cargo run -p archive-cli -- create neu.zip ./datei.txt ./ordner
 cargo run -p archive-cli -- create neu.7z ./datei.txt ./ordner
 cargo run -p archive-cli -- add neu.zip ./weitere-datei.txt
 cargo run -p archive-cli -- rename neu.zip ordner/alt.txt ordner/neu.txt
+cargo run -p archive-cli -- replace neu.zip ordner/neu.txt ./aktualisiert.txt
 cargo run -p archive-cli -- delete neu.zip datei.txt
 cargo run -p archive-cli -- test neu.zip
 cargo run -p archive-cli -- info neu.zip

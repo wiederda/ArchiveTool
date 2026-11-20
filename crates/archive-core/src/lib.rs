@@ -10,4 +10,4 @@ pub use archive::{
 };
 pub use entry::ArchiveEntry;
 pub use error::{ArchiveError, Result};
-pub use format::ArchiveFormat;
+pub use format::{ArchiveFormat, TarCompression};

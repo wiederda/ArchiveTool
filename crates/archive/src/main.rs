@@ -241,7 +241,7 @@ impl ArchiveApp {
 
     fn open_archive(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Archive", &["zip", "7z"])
+            .add_filter("Archive", &["zip", "7z", "tar", "gz", "tgz"])
             .pick_file()
         {
             self.open_archive_path(path);
@@ -254,14 +254,11 @@ impl ArchiveApp {
         }
 
         // Archive werden geöffnet; normale Dateien und Ordner werden in das
-        // aktuell geöffnete ZIP übernommen.
+        // aktuell geöffnete ZIP übernommen. Die Erkennung erfolgt über Inhalt
+        // und Endung, damit auch TAR- und TAR.GZ-Archive funktionieren.
         let archives: Vec<_> = files
             .iter()
-            .filter(|path| {
-                path.extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "zip" | "7z"))
-            })
+            .filter(|path| ArchiveFormat::detect(path).is_ok())
             .cloned()
             .collect();
         if !archives.is_empty() {
@@ -1110,7 +1107,7 @@ impl ArchiveApp {
                     ui.add_space(6.0);
                     ui.heading(egui::RichText::new("Kein Archiv geöffnet").size(24.0));
                     ui.add_space(6.0);
-                    ui.label("Öffne ein ZIP- oder 7z-Archiv, um dessen Inhalt anzuzeigen.");
+                    ui.label("Öffne ein ZIP-, 7z-, TAR- oder TAR.GZ-Archiv, um dessen Inhalt anzuzeigen.");
                     ui.add_space(18.0);
                     if inline_button(ui, &self.icons, ICON_OPEN, "📂", "Archiv öffnen").clicked()
                     {
@@ -1474,7 +1471,18 @@ impl ArchiveApp {
             .iter()
             .filter_map(|entry| entry.compressed_size)
             .sum();
-        rows.push(("Komprimiert".into(), format_bytes(compressed)));
+        let has_compressed = self
+            .entries
+            .iter()
+            .any(|entry| entry.compressed_size.is_some());
+        rows.push((
+            "Komprimiert".into(),
+            if has_compressed {
+                format_bytes(compressed)
+            } else {
+                "–".to_string()
+            },
+        ));
         rows.push(("Auswahl".into(), self.selection.len().to_string()));
 
         let selected = self

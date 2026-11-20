@@ -18,5 +18,11 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 sevenz-rust2 = { version = "0.25", default-features = true }
+tar = "0.4"
+flate2 = "1"
+bzip2 = "0.6"
+lzma-rust2 = "0.25"
+zstd = "0.13"
+lz4_flex = "0.11"
 eframe = "0.33"
 rfd = "0.15"
