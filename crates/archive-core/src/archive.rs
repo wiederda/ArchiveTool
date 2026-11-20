@@ -12,7 +12,7 @@ use tar::Archive as TarArchive;
 use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use bzip2::read::BzDecoder;
-use lzma_rust2::xz::XzReader;
+use lzma_rust2::XzReader;
 
 use crate::{ArchiveEntry, ArchiveError, ArchiveFormat, Result, TarCompression};
 
@@ -177,7 +177,12 @@ pub fn extract_entry(archive_path: &Path, entry_name: &str, destination: &Path) 
             fs::write(&target, data)?;
             Ok(())
         }
-        format => extract_tar_entry(archive_path, entry_name, destination, tar_compression(format)),
+        format => extract_tar_entry(
+            archive_path,
+            entry_name,
+            destination,
+            tar_compression(format),
+        ),
     }
 }
 
@@ -230,42 +235,24 @@ fn extract_where(
     match ArchiveFormat::detect(archive_path)? {
         ArchiveFormat::Zip => extract_zip_where(archive_path, destination, wanted),
         ArchiveFormat::SevenZip => extract_7z_where(archive_path, destination, wanted),
-        ArchiveFormat::Tar => extract_tar_where(
-            archive_path,
-            destination,
-            wanted,
-            TarCompression::None,
-        ),
-        ArchiveFormat::TarGz => extract_tar_where(
-            archive_path,
-            destination,
-            wanted,
-            TarCompression::Gzip,
-        ),
-        ArchiveFormat::TarBz2 => extract_tar_where(
-            archive_path,
-            destination,
-            wanted,
-            TarCompression::Bzip2,
-        ),
-        ArchiveFormat::TarXz => extract_tar_where(
-            archive_path,
-            destination,
-            wanted,
-            TarCompression::Xz,
-        ),
-        ArchiveFormat::TarZstd => extract_tar_where(
-            archive_path,
-            destination,
-            wanted,
-            TarCompression::Zstd,
-        ),
-        ArchiveFormat::TarLz4 => extract_tar_where(
-            archive_path,
-            destination,
-            wanted,
-            TarCompression::Lz4,
-        ),
+        ArchiveFormat::Tar => {
+            extract_tar_where(archive_path, destination, wanted, TarCompression::None)
+        }
+        ArchiveFormat::TarGz => {
+            extract_tar_where(archive_path, destination, wanted, TarCompression::Gzip)
+        }
+        ArchiveFormat::TarBz2 => {
+            extract_tar_where(archive_path, destination, wanted, TarCompression::Bzip2)
+        }
+        ArchiveFormat::TarXz => {
+            extract_tar_where(archive_path, destination, wanted, TarCompression::Xz)
+        }
+        ArchiveFormat::TarZstd => {
+            extract_tar_where(archive_path, destination, wanted, TarCompression::Zstd)
+        }
+        ArchiveFormat::TarLz4 => {
+            extract_tar_where(archive_path, destination, wanted, TarCompression::Lz4)
+        }
     }
 }
 
@@ -1305,11 +1292,9 @@ mod tests {
                 encoder.finish().unwrap()
             }
             TarCompression::Xz => {
-                let mut encoder = lzma_rust2::xz::XzWriter::new(
-                    Vec::new(),
-                    lzma_rust2::xz::XzOptions::with_preset(6),
-                )
-                .unwrap();
+                let mut encoder =
+                    lzma_rust2::XzWriter::new(Vec::new(), lzma_rust2::XzOptions::with_preset(6))
+                        .unwrap();
                 encoder.write_all(&data).unwrap();
                 encoder.finish().unwrap()
             }

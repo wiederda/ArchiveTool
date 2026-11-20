@@ -17,6 +17,8 @@ Ein modularer Archivmanager in Rust mit getrennten Anwendungen für CLI und GUI.
   Archiv extrahieren und Integrität testen.
 - TAR und TAR.GZ: Archive öffnen, Einträge auflisten, Dateien, Auswahlen oder
   das gesamte Archiv extrahieren und Integrität testen.
+- TAR.BZ2, TAR.XZ, TAR.ZST und TAR.LZ4: Archive öffnen, Einträge auflisten,
+  Dateien, Auswahlen oder das gesamte Archiv extrahieren und Integrität testen.
 - GUI: Office-Ribbon mit Icons, Mehrfachauswahl (Strg/Umschalt),
   Kontextmenü, sortierbare Spalten, Entpacken, Hinzufügen, Umbenennen,
   Löschen mit Bestätigung, Testen, Eigenschaften und Drag & Drop zum Öffnen
@@ -26,9 +28,10 @@ Ein modularer Archivmanager in Rust mit getrennten Anwendungen für CLI und GUI.
 - CLI: `list`, `extract`, `create`, `add`, `rename`, `replace`, `delete`,
   `test`, `info`.
 
-7z kann erstellt, geöffnet, extrahiert und geprüft werden. TAR und TAR.GZ
-können gelesen und entpackt werden. Bearbeitungen bestehender 7z-, TAR- und
-TAR.GZ-Archive sind noch nicht unterstützt.
+7z kann erstellt, geöffnet, extrahiert und geprüft werden. TAR, TAR.GZ,
+TAR.BZ2, TAR.XZ, TAR.ZST und TAR.LZ4 können gelesen und entpackt werden.
+Bearbeitungen bestehender 7z-, TAR- und TAR.GZ-Archive sind noch nicht
+unterstützt.
 
 ## Voraussetzungen
 

@@ -241,7 +241,13 @@ impl ArchiveApp {
 
     fn open_archive(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
-            .add_filter("Archive", &["zip", "7z", "tar", "gz", "tgz"])
+            .add_filter(
+                "Archive",
+                &[
+                    "zip", "7z", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz", "zst", "tzst",
+                    "lz4", "tlz4",
+                ],
+            )
             .pick_file()
         {
             self.open_archive_path(path);
